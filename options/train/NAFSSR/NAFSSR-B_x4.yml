@@ -81,6 +81,21 @@ train:
     loss_weight: 1.
     reduction: mean
 
+  perceptual_opt:
+    type: VGGPerceptualLoss
+    resize: False
+    loss_weight: 0.00001
+    reduction: mean
+
+  texture_opt: 
+    type: TextureLossVGG19 
+    loss_weight: 5.0  
+
+  KLT_opt: 
+    type: KLTStereoSRQA 
+    loss_weight: 0.0000001
+    KLT_kernel_path: ../../../basicsr/models/losses/KLT_kernel_64.mat
+
 # validation settings
 val:
   val_freq: !!float 2e4
