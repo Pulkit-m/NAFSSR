@@ -11,10 +11,14 @@ from collections import OrderedDict
 from copy import deepcopy
 from os import path as osp
 from tqdm import tqdm
+import numpy as np 
 
 from basicsr.models.archs import define_network
 from basicsr.models.base_model import BaseModel
 from basicsr.utils import get_root_logger, imwrite, tensor2img
+from basicsr.utils.options import parse
+from basicsr.metrics.psnr_ssim import calculate_psnr
+# from basicsr_dup.models import create_model
 from basicsr.utils.dist_util import get_dist_info
 
 loss_module = importlib.import_module('basicsr.models.losses')
@@ -60,10 +64,49 @@ class ImageRestorationModel(BaseModel):
             self.cri_perceptual = cri_perceptual_cls(
                 **train_opt['perceptual_opt']).to(self.device)
         else:
-            self.cri_perceptual = None
+            self.cri_perceptual = None 
 
-        if self.cri_pix is None and self.cri_perceptual is None:
-            raise ValueError('Both pixel and perceptual losses are None.')
+        if train_opt.get('iqa_opt'):
+            iqa_type = train_opt['iqa_opt'].pop('type') #this probably should return 'maniqa'
+            cri_iqa_cls = getattr(loss_module, iqa_type)  #this will fetch the class MANIQA code from losses.py 
+            self.cri_iqa = cri_iqa_cls( #initializing the class object here. add config files in options/*/*/*.yml files
+                **train_opt['iqa_opt']
+            ).to(self.device)
+        else: 
+            self.cri_iqa = None
+
+        if train_opt.get('texture_opt'):
+            text_loss_type = train_opt['texture_opt'].pop('type') # TextureLossVGG19 
+            cri_text_loss_cls = getattr(loss_module, text_loss_type) 
+            self.cri_text_loss = cri_text_loss_cls(
+                **train_opt['texture_opt']
+            ).to(self.device)
+        else: 
+            self.cri_text_loss = None 
+
+        if train_opt.get('KLT_opt'): 
+            KLT_loss_type = train_opt['KLT_opt'].pop('type') 
+            cri_klt_loss_cls = getattr(loss_module, KLT_loss_type) 
+            self.cri_klt_loss = cri_klt_loss_cls(
+                **train_opt['KLT_opt']
+            ).to(self.device)
+        else: 
+            self.cri_klt_loss = None
+        
+
+        if self.cri_pix is None: 
+            print("Pixel Loss is None") 
+        if self.cri_perceptual is None: 
+            print("Perceptual Loss is None")
+        if self.cri_iqa is None: 
+            print("IQA Loss is None")
+        if self.cri_text_loss is None: 
+            print("Texture Loss is None")
+        if self.cri_klt_loss is None: 
+            print("KLT Loss is None")
+        if self.cri_pix is None and self.cri_perceptual is None and self.cri_iqa is None and self.cri_text_loss is None and self.cri_klt_loss is None:
+            raise ValueError('pixel, perceptual, iqa, and KLT losses are None.')
+
 
         # set up optimizers and schedulers
         self.setup_optimizers()
@@ -212,14 +255,40 @@ class ImageRestorationModel(BaseModel):
 
         # perceptual loss
         if self.cri_perceptual:
-            l_percep, l_style = self.cri_perceptual(self.output, self.gt)
+            l_percep_left, l_percep_right = self.cri_perceptual(self.output, self.gt)
         #
-            if l_percep is not None:
-                l_total += l_percep
-                loss_dict['l_percep'] = l_percep
-            if l_style is not None:
-                l_total += l_style
-                loss_dict['l_style'] = l_style
+            if l_percep_left is not None:
+                l_total += l_percep_left
+                loss_dict['l_percep_left'] = l_percep_left
+            if l_percep_right is not None:
+                l_total += l_percep_right
+                loss_dict['l_percep_right'] = l_percep_right
+
+        # Image Quality Assessment Loss:  MANIQA Loss NOT IMPLEMENTED YET
+        if self.cri_iqa: 
+            loss_iqa = 0. 
+            for pred in preds: 
+                loss_iqa += self.cri_iqa(pred)
+            
+            l_total += loss_iqa  
+            loss_dict['l_iqa'] = loss_iqa
+
+
+        # VGG 19 Based Texture Loss
+        if self.cri_text_loss and current_iter>=50000: 
+            loss_texture = self.cri_text_loss(self.output, self.gt)  
+            if loss_texture is not None: 
+                l_total += loss_texture 
+                loss_dict['l_texture'] = loss_texture
+
+        # KLT Stereo SR QA Loss
+        if self.cri_klt_loss: 
+            loss_klt = self.cri_klt_loss(self.output, self.gt) 
+            if loss_klt is not None: 
+                l_total += loss_klt  
+                loss_dict['l_klt_loss'] = loss_klt
+
+
 
 
         l_total = l_total + 0. * sum(p.sum() for p in self.net_g.parameters())
